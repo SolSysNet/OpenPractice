@@ -552,7 +552,7 @@ std::string Practice::nextInvoiceNumber(int projectId) const {
         if (i.projectId == projectId) ++n;
     }
     const std::string base = p && !trim(p->number).empty() ? trim(p->number) : "INV";
-    char seq[8];
+    char seq[16];
     std::snprintf(seq, sizeof seq, "%02d", n + 1);
     return base + "-" + seq;
 }

@@ -102,7 +102,7 @@ bool calendar(std::optional<op::Date>& date, int& viewYear, int& viewMonth) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
             colors = 2;
         }
-        char label[8];
+        char label[16];
         std::snprintf(label, sizeof label, "%d", day);
         ImGui::PushID(day);
         if (ImGui::Button(label, ImVec2(cell, cell))) {
