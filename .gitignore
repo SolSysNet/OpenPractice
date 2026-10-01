@@ -1,0 +1,11 @@
+build*/
+out/
+.vs/
+.vscode/
+imgui.ini
+CMakeUserPresets.json
+compile_commands.json
+*.opp.bak
+*.opp.tmp
+# Practice files hold client and staff data; keep them out of the repository.
+*.opp
