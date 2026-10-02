@@ -53,6 +53,12 @@ int main(int argc, char** argv) {
 
     try {
         opgui::App app(argc > 1 ? argv[1] : "");
+        // With uncommitted changes the app asks what to do and closes itself afterwards.
+        glfwSetWindowUserPointer(window, &app);
+        glfwSetWindowCloseCallback(window, [](GLFWwindow* w) {
+            auto* a = static_cast<opgui::App*>(glfwGetWindowUserPointer(w));
+            if (a && !a->canClose()) glfwSetWindowShouldClose(w, GLFW_FALSE);
+        });
         std::string title;
         int busyFrames = 3;
         while (!glfwWindowShouldClose(window)) {
@@ -92,7 +98,9 @@ int main(int argc, char** argv) {
             }
             if (app.quitRequested()) glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
+        glfwSetWindowUserPointer(window, nullptr);
     } catch (const std::exception& e) {
+        glfwSetWindowUserPointer(window, nullptr);
         std::fprintf(stderr, "OpenPractice hit an unexpected error and has to close: %s\n", e.what());
     }
 

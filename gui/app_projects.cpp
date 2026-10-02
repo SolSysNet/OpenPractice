@@ -332,7 +332,7 @@ void App::drawProjectOverview(Project& p) {
     if (ui::DangerButton("Delete project...")) {
         const int id = p.id;
         confirm("Delete this project?",
-                "Delete " + practice.refName(Ref::Project, id) + " and everything recorded on it? This can't be undone.",
+                "Delete " + practice.refName(Ref::Project, id) + " and everything recorded on it? You can undo this until you commit.",
                 "Delete", [this, id] {
                     defer([this, id] {
                         practice_->removeProject(id);

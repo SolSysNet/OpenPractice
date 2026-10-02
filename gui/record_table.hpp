@@ -61,6 +61,33 @@ ImVec4 choiceColor(const T& record, const op::Field<T>& f) {
     return color;
 }
 
+// Adjusts a copied record so it reads as a new one: next numbers, " (copy)" names, unpaid.
+template <class T>
+void prepareDuplicate(const op::Practice& practice, T& r) {
+    if constexpr (std::is_same_v<T, op::Rfi>) {
+        r.number = practice.nextRfiNumber(r.projectId);
+        r.status = op::RfiStatus::Open;
+        r.answered.reset();
+    } else if constexpr (std::is_same_v<T, op::ChangeOrder>) {
+        r.number = practice.nextChangeNumber(r.projectId);
+        r.status = op::ChangeStatus::Proposed;
+    } else if constexpr (std::is_same_v<T, op::Invoice>) {
+        r.number = practice.nextInvoiceNumber(r.projectId);
+        r.status = op::InvoiceStatus::Draft;
+        r.paid = op::Money();
+    }
+    if constexpr (!std::is_same_v<T, op::TimeEntry> && !std::is_same_v<T, op::Invoice>) {
+        for (const auto& f : op::schema<T>().fields) {
+            if (const auto* member = std::get_if<std::string T::*>(&f.member)) {
+                if (!(r.**member).empty()) {
+                    r.**member += " (copy)";
+                    break;
+                }
+            }
+        }
+    }
+}
+
 }  // namespace detail
 
 template <class T>
@@ -123,6 +150,79 @@ void App::drawRecordTable(const TableSpec<T>& spec, std::vector<T>& items) {
             });
         }
     }
+
+    // Deletes a record after checking what refers to it and asking.
+    auto requestDelete = [&](const T& r) {
+        const std::string why = spec.deleteBlocker ? spec.deleteBlocker(r) : std::string();
+        if (!why.empty()) {
+            notify(why, true);
+            return;
+        }
+        const int id = r.id;
+        const auto onDelete = spec.onDelete;
+        const std::string name =
+            spec.columns.empty() ? std::string() : op::displayValue(practice, r, *detail::fieldByKey<T>(spec.columns[0]));
+        const std::string label = name.empty() ? "this " + detail::lowerNoun(schema.title) : "\"" + name + "\"";
+        confirm("Delete " + detail::lowerNoun(schema.title) + "?", "Delete " + label + "? You can undo this until you commit.",
+                "Delete", [this, &items, id, onDelete] {
+                    defer([this, &items, id, onDelete] {
+                        items.erase(std::remove_if(items.begin(), items.end(), [&](const T& x) { return x.id == id; }),
+                                    items.end());
+                        if (onDelete) onDelete(id);
+                        changed();
+                    });
+                });
+    };
+
+    // Right-click menu for a row.
+    auto rowMenu = [&](T& r) {
+        if constexpr (std::is_same_v<T, op::Project>) {
+            projectContextMenu(r.id);
+            return;
+        } else {
+            const std::string title = spec.columns.empty() ? std::string(schema.title)
+                                                           : op::displayValue(practice, r, *detail::fieldByKey<T>(spec.columns[0]));
+            ImGui::TextDisabled("%s", title.empty() ? schema.title : title.c_str());
+            ImGui::Separator();
+            if (spec.open) {
+                if (ImGui::MenuItem("Open")) spec.open(r.id);
+            } else if (ImGui::MenuItem("Edit")) {
+                selectedId = r.id;
+            }
+            if (spec.make && ImGui::MenuItem("Duplicate")) {
+                const std::string id = spec.id;
+                defer([this, &items, source = r, id] {
+                    T copy = source;
+                    copy.id = op::Practice::nextId(items);
+                    detail::prepareDuplicate(*practice_, copy);
+                    items.push_back(copy);
+                    selection_[id] = copy.id;
+                    changed();
+                });
+            }
+            if (const auto* f = detail::fieldByKey<T>("status")) {
+                std::visit(
+                    [&](auto member) {
+                        using V = std::decay_t<decltype(r.*member)>;
+                        if constexpr (std::is_enum_v<V>) {
+                            if (statusMenu(r.*member)) changed();
+                        }
+                    },
+                    f->member);
+            }
+            if (ImGui::MenuItem("Copy row")) {
+                std::vector<std::string> cells;
+                for (const char* key : spec.columns) {
+                    if (const auto* f = detail::fieldByKey<T>(key)) cells.push_back(op::displayValue(practice, r, *f));
+                }
+                for (const auto& x : spec.extras) cells.push_back(x.text(r));
+                ImGui::SetClipboardText(op::join(cells, "\t").c_str());
+            }
+            ImGui::SetItemTooltip("Copy the row's values, tab separated, for a spreadsheet or email.");
+            ImGui::Separator();
+            if (ImGui::MenuItem("Delete...")) requestDelete(r);
+        }
+    };
 
     // ---- table (and editor panel beside it)
     const float panelWidth = selected ? std::min(fs * 26.0f, ImGui::GetContentRegionAvail().x * 0.45f) : 0.0f;
@@ -189,6 +289,10 @@ void App::drawRecordTable(const TableSpec<T>& spec, std::vector<T>& items) {
                         if (spec.open) spec.open(r.id);
                         else selectedId = isSelected ? 0 : r.id;
                     }
+                    if (ImGui::BeginPopupContextItem("##row")) {
+                        rowMenu(r);
+                        ImGui::EndPopup();
+                    }
                 } else if (f && inlineEdit) {
                     if (ui::FieldInput(practice, r, *f, refPicker(), -FLT_MIN)) changed();
                 } else if (f) {
@@ -254,25 +358,7 @@ void App::drawRecordTable(const TableSpec<T>& spec, std::vector<T>& items) {
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
-        if (ui::DangerButton("Delete")) {
-            const std::string why = spec.deleteBlocker ? spec.deleteBlocker(*selected) : std::string();
-            if (!why.empty()) {
-                notify(why, true);
-            } else {
-                const int id = selected->id;
-                const auto onDelete = spec.onDelete;
-                std::string label = name.empty() ? "this " + detail::lowerNoun(schema.title) : "\"" + name + "\"";
-                confirm("Delete " + detail::lowerNoun(schema.title) + "?", "Delete " + label + "? This can't be undone.",
-                        "Delete", [this, &items, id, onDelete] {
-                            defer([this, &items, id, onDelete] {
-                                items.erase(std::remove_if(items.begin(), items.end(), [&](const T& r) { return r.id == id; }),
-                                            items.end());
-                                if (onDelete) onDelete(id);
-                                changed();
-                            });
-                        });
-            }
-        }
+        if (ui::DangerButton("Delete")) requestDelete(*selected);
         ImGui::EndChild();
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor();

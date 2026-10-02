@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(OpenPractice VERSION 0.1.0 LANGUAGES CXX)
+project(OpenPractice VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -23,6 +23,7 @@ add_library(openpractice_core
     src/date.cpp
     src/model.cpp
     src/calc.cpp
+    src/diff.cpp
     src/sample.cpp
     src/pdf.cpp
     src/report.cpp
@@ -77,10 +78,12 @@ if(OPENPRACTICE_BUILD_GUI)
 
     set(OPENPRACTICE_GUI_SOURCES
         gui/app.cpp
+        gui/app_commit.cpp
         gui/app_dashboard.cpp
         gui/app_projects.cpp
         gui/app_schedule.cpp
         gui/app_firm.cpp
+        gui/app_theme.cpp
         gui/widgets.cpp
         gui/theme.cpp
     )

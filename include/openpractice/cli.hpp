@@ -8,7 +8,7 @@
 
 namespace op {
 
-constexpr const char* kVersion = "0.1.0";
+constexpr const char* kVersion = "0.2.0";
 
 // Runs one OpenPractice command line (argv without the program name). Returns the exit
 // code. `today` is the date used for overdue checks and new records.

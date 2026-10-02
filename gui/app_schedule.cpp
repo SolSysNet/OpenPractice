@@ -160,6 +160,59 @@ void App::drawSchedule(Project& project) {
     std::map<int, BarPos> bars;
     int clickedTask = 0;
 
+    auto deleteTask = [this](int id, const std::string& name) {
+        confirm("Delete task?", "Delete \"" + name + "\"? You can undo this until you commit.", "Delete", [this, id] {
+            defer([this, id] {
+                auto& tasks = practice_->tasks;
+                tasks.erase(std::remove_if(tasks.begin(), tasks.end(), [&](const Task& t) { return t.id == id; }), tasks.end());
+                practice_->clearReferences(Ref::Task, id);
+                changed();
+            });
+        });
+    };
+    auto shift = [this](Task& t, int days) {
+        if (t.start) t.start = t.start->addDays(days);
+        if (t.due) t.due = t.due->addDays(days);
+        changed();
+    };
+    // Right-click menu for a task's name or bar.
+    auto taskMenu = [&](Task& t) {
+        ImGui::TextDisabled("%s", t.name.empty() ? "Task" : t.name.c_str());
+        ImGui::Separator();
+        if (ImGui::MenuItem("Edit")) selectedId = t.id;
+        if (ImGui::MenuItem(t.status == TaskStatus::Done ? "Reopen" : "Mark done")) {
+            t.status = t.status == TaskStatus::Done ? TaskStatus::InProgress : TaskStatus::Done;
+            changed();
+        }
+        if (statusMenu(t.status)) changed();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Add a task after this")) {
+            const Task source = t;
+            defer([this, source] {
+                Task next;
+                next.id = Practice::nextId(practice_->tasks);
+                next.projectId = source.projectId;
+                next.phaseId = source.phaseId;
+                next.assigneeId = source.assigneeId;
+                next.name = "New task";
+                next.predecessorId = source.id;
+                next.start = source.due ? source.due->addDays(1) : today_;
+                next.due = next.start->addDays(7);
+                practice_->tasks.push_back(next);
+                selection_["schedule"] = next.id;
+                changed();
+            });
+        }
+        if (ImGui::MenuItem("Move a week later")) shift(t, 7);
+        if (ImGui::MenuItem("Move a week earlier")) shift(t, -7);
+        if (t.predecessorId && ImGui::MenuItem("Remove dependency")) {
+            t.predecessorId = 0;
+            changed();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Delete...")) deleteTask(t.id, t.name);
+    };
+
     ImGui::BeginChild("##chartarea", ImVec2(chartWidth, 0));
     const ImGuiTableFlags tf = ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerV |
                                ImGuiTableFlags_RowBg | ImGuiTableFlags_NoPadInnerX;
@@ -249,6 +302,10 @@ void App::drawSchedule(Project& project) {
                     const std::string label = t.name.empty() ? "(untitled)" : t.name;
                     if (ImGui::Selectable(label.c_str(), selectedId == t.id, 0, ImVec2(nameW - fs * 1.3f, 0)))
                         clickedTask = t.id;
+                    if (ImGui::BeginPopupContextItem("##taskmenu")) {
+                        taskMenu(t);
+                        ImGui::EndPopup();
+                    }
                     if (late) ImGui::SetItemTooltip("%d days overdue", today_ - *t.due);
                     else if (t.assigneeId) ImGui::SetItemTooltip("%s", practice.refName(Ref::Staff, t.assigneeId).c_str());
                 }
@@ -319,6 +376,10 @@ void App::drawSchedule(Project& project) {
                         ImGui::SetCursorScreenPos(ImVec2(b.x0, mid - h));
                         ImGui::InvisibleButton("##move", ImVec2(std::max(2.0f, b.x1 - b.x0 - (t.milestone ? 0.0f : grip)), h * 2));
                         if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                        if (ImGui::BeginPopupContextItem("##barmenu")) {
+                            taskMenu(t);
+                            ImGui::EndPopup();
+                        }
                         if (ImGui::IsItemActivated()) {
                             dragTask_ = t.id;
                             dragMode_ = 1;
@@ -408,17 +469,7 @@ void App::drawSchedule(Project& project) {
         if (startsBeforePredecessor(practice, *selected))
             ui::Callout("Starts before the task it comes after is due.", colorWarning());
         ImGui::Spacing();
-        if (ui::DangerButton("Delete task")) {
-            const int id = selected->id;
-            confirm("Delete task?", "Delete \"" + selected->name + "\"? This can't be undone.", "Delete", [this, id] {
-                defer([this, id] {
-                    auto& tasks = practice_->tasks;
-                    tasks.erase(std::remove_if(tasks.begin(), tasks.end(), [&](const Task& t) { return t.id == id; }), tasks.end());
-                    practice_->clearReferences(Ref::Task, id);
-                    changed();
-                });
-            });
-        }
+        if (ui::DangerButton("Delete task")) deleteTask(selected->id, selected->name);
         ImGui::EndChild();
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor();

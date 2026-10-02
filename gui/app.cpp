@@ -4,6 +4,7 @@
 #include "imgui_internal.h"  // ErrorRecoveryStoreState / TryToRecoverState
 #include "openpractice/cli.hpp"
 #include "openpractice/format.hpp"
+#include "openpractice/report.hpp"
 #include "openpractice/util.hpp"
 #include "platform.hpp"
 #include "theme.hpp"
@@ -118,7 +119,8 @@ App::App(std::string initialPath) {
 }
 
 App::~App() {
-    if (dirty_) saveNow();
+    // Uncommitted changes survive in the recovery file and are offered again next time.
+    if (practice_ && hasPending()) writeRecovery();
     saveConfig();
 }
 
@@ -130,7 +132,9 @@ void App::loadConfig() {
         if (eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq);
         const std::string value = line.substr(eq + 1);
+        if (readThemeConfig(key, value)) continue;
         if (key == "theme") darkTheme_ = value == "dark";
+        if (key == "auto_commit") autoCommit_ = value == "on";
         if (key == "recent_files") rememberRecentFiles_ = value != "off";
         if (key == "recent" && rememberRecentFiles_ && isUsablePath(value) && recent_.size() < 8 &&
             std::none_of(recent_.begin(), recent_.end(), [&](const std::string& r) { return samePath(r, value); }))
@@ -148,6 +152,8 @@ void App::saveConfig() const {
         std::ofstream out(tmp, std::ios::trunc);
         out << "theme=" << (darkTheme_ ? "dark" : "light") << '\n';
         out << "recent_files=" << (rememberRecentFiles_ ? "on" : "off") << '\n';
+        out << "auto_commit=" << (autoCommit_ ? "on" : "off") << '\n';
+        writeThemeConfig(out);
         if (rememberRecentFiles_) {
             for (const auto& r : recent_) {
                 if (isUsablePath(r)) out << "recent=" << r << '\n';
@@ -173,7 +179,6 @@ void App::rememberRecent(std::string path) {
 }
 
 bool App::openPractice(std::string path) {
-    if (dirty_) saveNow();
     if (!isUsablePath(path)) {
         notify("That file name can't be opened.", true);
         return false;
@@ -186,10 +191,10 @@ bool App::openPractice(std::string path) {
         return false;
     }
     path_ = path;
-    dirty_ = false;
     saveError_.clear();
     deferred_.clear();  // edits queued against the previous file
     ++version_;
+    resetHistory();
     recalculate();  // cached figures point into the previous file's records
     screen_ = Screen::Dashboard;
     projectId_ = 0;
@@ -205,11 +210,11 @@ bool App::openPractice(std::string path) {
     }
     rememberRecent(path);
     notify("Opened " + fs::u8path(path).filename().u8string());
+    checkRecovery();
     return true;
 }
 
 void App::closePractice() {
-    if (dirty_) saveNow();
     practice_.reset();
     path_.clear();
     deferred_.clear();
@@ -260,23 +265,6 @@ void App::openSample() {
     if (!createPractice(form, true)) notify(form.error, true);
 }
 
-void App::changed() {
-    dirty_ = true;
-    lastChange_ = std::chrono::steady_clock::now();
-    ++version_;
-}
-
-void App::saveNow() {
-    if (!practice_ || path_.empty()) return;
-    try {
-        practice_->save(path_);
-        dirty_ = false;
-        saveError_.clear();
-    } catch (const std::exception& e) {
-        saveError_ = e.what();
-    }
-}
-
 void App::defer(std::function<void()> action) { deferred_.push_back(std::move(action)); }
 
 void App::recalculate() {
@@ -290,6 +278,7 @@ void App::recalculate() {
     for (const auto& p : practice_->projects) stats_[p.id] = projectStats(*practice_, p.id, today_);
     issues_ = reviewPractice(*practice_, today_);
     firmStats_ = firmStats(*practice_, today_);
+    refreshPending();
     computedVersion_ = version_;
 }
 
@@ -309,7 +298,9 @@ bool App::wantsFrequentRedraw() const {
     // ImGui hands a burst of keystrokes to the app one per frame; keep drawing until the
     // queue is empty.
     if (!ImGui::GetCurrentContext()->InputEventsQueue.empty()) return true;
-    if (dirty_) return true;  // keep ticking until the autosave lands
+    // Keep ticking until an edit ends and the recovery file (or an automatic commit) lands.
+    if (practice_ && (gestureOpen_ || (autoCommit_ ? version_ != committedVersion_ : version_ != recoveryVersion_)))
+        return true;
     if (notice_.empty()) return false;
     const float age = std::chrono::duration<float>(std::chrono::steady_clock::now() - noticeTime_).count();
     return age < kNoticeSeconds + 1.0f;
@@ -367,14 +358,16 @@ void App::goToIssue(const Issue& issue) {
 }
 
 void App::chooseOpenFile() {
-    if (nativeFileDialogsAvailable()) {
-        if (auto path = openFileDialog("Open a practice file", {kFilterDescription, kFilterPattern})) openPractice(*path);
-    } else {
-        typedPath_.clear();
-        typedPathPrompt_ = "Open the practice file at:";
-        typedPathAction_ = [this](const std::string& p) { openPractice(p); };
-        requestPopup("Enter a path##typed");
-    }
+    guardPending("opening another file", [this] {
+        if (nativeFileDialogsAvailable()) {
+            if (auto path = openFileDialog("Open a practice file", {kFilterDescription, kFilterPattern})) openPractice(*path);
+        } else {
+            typedPath_.clear();
+            typedPathPrompt_ = "Open the practice file at:";
+            typedPathAction_ = [this](const std::string& p) { openPractice(p); };
+            requestPopup("Enter a path##typed");
+        }
+    });
 }
 
 void App::saveOutput(const char* title, FileFilter filter, const char* extension, const std::string& suggestedName,
@@ -505,6 +498,8 @@ void App::drawFrame() {
         ImGui::PopStyleColor();
 
         ImGui::SameLine(0, 0);
+        ImGui::BeginGroup();
+        if (!pendingChanges_.empty() && !autoCommit_) drawCommitBar();
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 18));
         // Screens with their own scrolling tables fill the window; the rest scroll as a page.
         ImGui::BeginChild("##content", ImVec2(0, -statusHeight), ImGuiChildFlags_AlwaysUseWindowPadding);
@@ -520,14 +515,22 @@ void App::drawFrame() {
         }
         ImGui::EndChild();
         ImGui::PopStyleVar();
+        ImGui::EndGroup();
         drawStatusBar();
     }
     ImGui::End();
 
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, ImGuiInputFlags_RouteGlobal)) chooseOpenFile();
     if (practice_ && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) {
-        saveNow();
-        if (saveError_.empty()) notify("Saved");
+        if (!hasPending()) notify("Nothing to commit");
+        else if (commitChanges()) notify("Changes committed");
+    }
+    // Undo / redo apply to the practice, except while typing in a field (which has its own).
+    if (practice_ && !ImGui::GetIO().WantTextInput) {
+        if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal)) undo();
+        if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, ImGuiInputFlags_RouteGlobal) ||
+            ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal))
+            redo();
     }
 
     if (!pendingPopup_.empty()) {
@@ -535,6 +538,8 @@ void App::drawFrame() {
         pendingPopup_.clear();
     }
     drawModals();
+    if (practice_) drawCommitModals();
+    if (showThemeEditor_) drawThemeEditor();
 
     // Structural edits (add / delete) run now that nothing is drawing from the lists.
     if (practice_) {
@@ -545,20 +550,35 @@ void App::drawFrame() {
         deferred_.clear();
     }
 
-    // Autosave when the user leaves the field, or after a second without edits.
+    endEditGesture();
+
+    // When the user leaves the field (or after a second without edits): commit automatically
+    // if that's turned on, otherwise keep the uncommitted changes in the recovery file.
     const float idle = std::chrono::duration<float>(std::chrono::steady_clock::now() - lastChange_).count();
-    if (dirty_ && (!ImGui::IsAnyItemActive() || idle > 1.0f)) saveNow();
+    if (practice_ && (!ImGui::IsAnyItemActive() || idle > 1.0f)) {
+        if (autoCommit_ && version_ != committedVersion_) {
+            if (!hasPending()) committedVersion_ = version_;
+            else commitChanges();
+        } else if (!autoCommit_ && version_ != recoveryVersion_) {
+            if (hasPending()) {
+                writeRecovery();
+            } else {
+                removeRecovery();
+                recoveryVersion_ = version_;
+            }
+        }
+    }
 }
 
 void App::drawMenuBar() {
     if (!ImGui::BeginMainMenuBar()) return;
     const bool open = practice_.has_value();
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("New Practice...")) closePractice();
+        if (ImGui::MenuItem("New Practice...")) guardPending("starting a new practice", [this] { closePractice(); });
         if (ImGui::MenuItem("Open...", "Ctrl+O")) chooseOpenFile();
         if (ImGui::BeginMenu("Open Recent", !recent_.empty())) {
             for (const auto& r : std::vector<std::string>(recent_)) {
-                if (ImGui::MenuItem(r.c_str())) openPractice(r);
+                if (ImGui::MenuItem(r.c_str())) guardPending("opening another file", [this, r] { openPractice(r); });
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Clear Recent Files")) {
@@ -567,15 +587,27 @@ void App::drawMenuBar() {
             }
             ImGui::EndMenu();
         }
-        if (ImGui::MenuItem("Open Sample Practice")) openSample();
-        if (ImGui::MenuItem("Save", "Ctrl+S", false, open)) {
-            saveNow();
-            if (saveError_.empty()) notify("Saved");
+        if (ImGui::MenuItem("Open Sample Practice")) guardPending("opening another file", [this] { openSample(); });
+        ImGui::Separator();
+        if (ImGui::MenuItem("Close", nullptr, false, open)) guardPending("closing the file", [this] { closePractice(); });
+        ImGui::Separator();
+        if (ImGui::MenuItem("Exit") && canClose()) quit_ = true;
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Edit", open)) {
+        const bool pending = hasPending();
+        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, !undo_.empty())) undo();
+        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !redo_.empty())) redo();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Commit Changes", "Ctrl+S", false, pending) && commitChanges()) notify("Changes committed");
+        if (ImGui::MenuItem("Review Changes...", nullptr, false, pending)) requestPopup("Review changes");
+        if (ImGui::MenuItem("Discard Changes", nullptr, false, pending)) discardChanges();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Commit Automatically", nullptr, autoCommit_)) {
+            autoCommit_ = !autoCommit_;
+            saveConfig();
         }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Close", nullptr, false, open)) closePractice();
-        ImGui::Separator();
-        if (ImGui::MenuItem("Exit")) quit_ = true;
+        ImGui::SetItemTooltip("Save every change to the file as you make it, without a commit step.");
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Go", open)) {
@@ -597,6 +629,8 @@ void App::drawMenuBar() {
             saveConfig();
         }
         ImGui::SetItemTooltip("Keep a list of recently opened files and reopen the last one at startup.");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Theme Editor...", nullptr, showThemeEditor_)) showThemeEditor_ = !showThemeEditor_;
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Help")) {
@@ -666,6 +700,10 @@ void App::drawSidebar() {
                 const ImVec4 dot = it != stats_.end() ? ui::healthColor(it->second.health) : colorMuted();
                 if (navItem(label.c_str(), screen_ == Screen::Project && projectId_ == p.id, fs * 0.8f, 0, dot))
                     openProject(p.id);
+                if (ImGui::BeginPopupContextItem("##project")) {
+                    projectContextMenu(p.id);
+                    ImGui::EndPopup();
+                }
                 if (ImGui::IsItemHovered() && it != stats_.end())
                     ImGui::SetTooltip("%s\n%s", practice_->refName(Ref::Project, p.id).c_str(), it->second.healthNote.c_str());
                 ImGui::PopID();
@@ -682,7 +720,14 @@ void App::drawStatusBar() {
     if (!saveError_.empty()) {
         ImGui::TextColored(colorNegative(), "Not saved: %s", saveError_.c_str());
     } else {
-        ui::Muted((path_ + (dirty_ ? "  (saving...)" : "  (saved)")).c_str());
+        ui::Muted(path_.c_str());
+        ImGui::SameLine();
+        if (!pendingChanges_.empty()) {
+            ImGui::TextColored(colorWarning(), "%zu uncommitted %s", pendingChanges_.size(),
+                               pendingChanges_.size() == 1 ? "change" : "changes");
+        } else {
+            ui::Muted(autoCommit_ ? "(saved)" : "(all changes committed)");
+        }
     }
     if (notice_.empty()) return;
     const float age = std::chrono::duration<float>(std::chrono::steady_clock::now() - noticeTime_).count();
@@ -692,6 +737,36 @@ void App::drawStatusBar() {
     ImVec4 color = noticeIsError_ ? colorNegative() : colorPositive();
     color.w = std::min(1.0f, (kNoticeSeconds - age) / 1.0f);
     ImGui::TextColored(color, "%s", notice_.c_str());
+}
+
+void App::projectContextMenu(int projectId) {
+    Project* p = practice_->findProject(projectId);
+    if (!p) return;
+    ImGui::TextDisabled("%s", practice_->refName(Ref::Project, projectId).c_str());
+    ImGui::Separator();
+    if (ImGui::MenuItem("Open")) openProject(projectId, ProjectTab::Overview);
+    if (ImGui::MenuItem("Schedule")) openProject(projectId, ProjectTab::Schedule);
+    if (ImGui::MenuItem("Phases & fee")) openProject(projectId, ProjectTab::Phases);
+    if (ImGui::MenuItem("Status report (PDF)...")) {
+        saveOutput("Save the status report", {"PDF documents (*.pdf)", "*.pdf"}, "pdf",
+                   safeReportName(*p) + " status report.pdf",
+                   [this, projectId] { return projectReportPdf(*practice_, projectId, today_); });
+    }
+    ImGui::Separator();
+    if (statusMenu(p->status)) changed();
+    ImGui::Separator();
+    if (ImGui::MenuItem("Delete project...")) {
+        confirm("Delete this project?",
+                "Delete " + practice_->refName(Ref::Project, projectId) +
+                    " and everything recorded on it? You can undo this until you commit.",
+                "Delete", [this, projectId] {
+                    defer([this, projectId] {
+                        practice_->removeProject(projectId);
+                        changed();
+                        if (screen_ == Screen::Project && projectId_ == projectId) go(Screen::Projects);
+                    });
+                });
+    }
 }
 
 void App::screenHeader(const char* title, const std::string& subtitle) {

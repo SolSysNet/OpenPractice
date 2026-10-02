@@ -4,6 +4,7 @@
 
 #include "openpractice/calc.hpp"
 #include "openpractice/cli.hpp"
+#include "openpractice/diff.hpp"
 #include "openpractice/format.hpp"
 #include "openpractice/model.hpp"
 #include "openpractice/report.hpp"
@@ -606,6 +607,46 @@ TEST(command_line) {
     CHECK_EQ(run({"frobnicate"}), 1);
     CHECK_EQ(run({"version"}, &out), 0);
     CHECK(out.find(kVersion) != std::string::npos);
+}
+
+// ------------------------------------------------------------------ diff
+
+TEST(diff_finds_added_removed_and_changed_records) {
+    const Practice before = smallPractice();
+    CHECK(diffPractice(before, before).empty());
+
+    Practice after = before;
+    after.firm.name = "Studio";
+    after.phases[1].complete = Decimal::fromInt(60);
+    after.phases[1].budgetHours = Decimal::fromInt(250);
+    after.time.erase(after.time.begin());
+    Task t;
+    t.id = 1;
+    t.projectId = 1;
+    t.name = "Door schedule";
+    after.tasks.push_back(t);
+
+    const auto changes = diffPractice(before, after);
+    CHECK_EQ(changes.size(), std::size_t(4));
+    CHECK(changes[0].kind == RecordChange::Kind::Modified);
+    CHECK_EQ(changes[0].type, std::string("Firm"));
+    CHECK(changes[1].kind == RecordChange::Kind::Modified);
+    CHECK_EQ(changes[1].name, std::string("DD"));
+    CHECK_EQ(changes[1].projectId, 1);
+    CHECK_EQ(changes[1].fields.size(), std::size_t(2));
+    CHECK_EQ(describe(changes[1]), std::string("Changed phase \"DD\": Budget hours, % complete"));
+    CHECK(changes[2].kind == RecordChange::Kind::Added);
+    CHECK_EQ(describe(changes[2]), std::string("Added task \"Door schedule\""));
+    CHECK(changes[3].kind == RecordChange::Kind::Removed);
+    CHECK_EQ(changes[3].name, std::string("2026-03-02 Ana 60 h"));
+    CHECK_EQ(describe(changes[3]), std::string("Deleted time entry \"2026-03-02 Ana 60 h\""));
+
+    Rfi r;
+    r.id = 3;
+    r.subject = "Footing depth";
+    Practice withRfi = before;
+    withRfi.rfis.push_back(r);
+    CHECK_EQ(describe(diffPractice(before, withRfi).at(0)), std::string("Added RFI \"Footing depth\""));
 }
 
 int main() {

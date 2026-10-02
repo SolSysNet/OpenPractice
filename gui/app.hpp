@@ -9,8 +9,14 @@
 //
 // Edits that add or remove records are deferred to the end of the frame (defer()), so a
 // screen never draws from a list that was reallocated under it.
+//
+// Commit stage: edits change the working copy immediately (so every figure updates), but
+// the file is only written when the user commits. Until then changes can be reviewed,
+// undone step by step or discarded, and they are kept in a recovery file beside the
+// practice file so a crash doesn't lose them.
 
 #include "openpractice/calc.hpp"
+#include "openpractice/diff.hpp"
 #include "openpractice/model.hpp"
 #include "platform.hpp"
 #include "widgets.hpp"
@@ -79,6 +85,9 @@ public:
 
     void frame();
     bool quitRequested() const { return quit_; }
+    // Whether the window may close now. With uncommitted changes this asks what to do with
+    // them and returns false; the app then quits by itself once the user decides.
+    bool canClose();
     std::string windowTitle() const;
     bool wantsFrequentRedraw() const;
 
@@ -89,7 +98,6 @@ private:
     bool createPractice(NewPracticeForm& form, bool sample);
     void openSample();
     void changed();  // the open practice was edited
-    void saveNow();
     void recalculate();
     void loadConfig();
     void saveConfig() const;
@@ -101,6 +109,28 @@ private:
     // preview, to a temporary file opened in the default app.
     void saveOutput(const char* title, FileFilter filter, const char* extension, const std::string& suggestedName,
                     std::function<std::string()> make, bool preview = false);
+
+    // ---- commit stage (app_commit.cpp)
+    bool hasPending();               // uncommitted changes exist (refreshes the diff if needed)
+    void refreshPending();
+    bool commitChanges();            // writes the file; false (with saveError_) on failure
+    void discardChanges();           // deferred; undoable
+    void undo();                     // deferred
+    void redo();                     // deferred
+    void replaceWorking(op::Practice p);  // swaps the working copy (end of frame only)
+    void endEditGesture();           // end-of-frame undo bookkeeping
+    void resetHistory();             // after opening a file
+    // Runs `then` now if nothing is uncommitted, otherwise asks to commit or discard first.
+    void guardPending(std::string action, std::function<void()> then);
+    void drawCommitBar();
+    void drawCommitModals();
+    std::string recoveryPath() const;
+    void writeRecovery();
+    void removeRecovery();
+    void checkRecovery();            // after opening a file
+
+    // ---- theme editor (app_theme.cpp)
+    void drawThemeEditor();
 
     // ---- chrome (app.cpp)
     void drawMenuBar();
@@ -115,6 +145,11 @@ private:
     void requestPopup(const char* name);
     void confirm(std::string title, std::string message, std::string button, std::function<void()> action);
     void screenHeader(const char* title, const std::string& subtitle = {});
+
+    // ---- context menus (app.cpp)
+    void projectContextMenu(int projectId);
+    template <class E>
+    bool statusMenu(E& value);
 
     // ---- shared helpers (app.cpp, record_table.hpp)
     std::vector<ui::Option> refOptions(op::Ref kind, int projectId) const;
@@ -162,10 +197,26 @@ private:
     std::vector<op::Issue> issues_;
     op::FirmStats firmStats_;
     op::Date today_;
-    bool dirty_ = false;
     std::chrono::steady_clock::time_point lastChange_;
     std::string saveError_;
     std::vector<std::function<void()>> deferred_;
+
+    // commit stage
+    op::Practice committed_;                     // as in the file
+    op::Practice shadow_;                        // working copy at the last undo point
+    std::vector<op::Practice> undo_;
+    std::vector<op::Practice> redo_;
+    bool gestureOpen_ = false;                   // an edit is in progress (one undo step)
+    std::vector<op::RecordChange> pendingChanges_;  // committed_ -> working copy
+    std::uint64_t diffVersion_ = 0;
+    std::uint64_t committedVersion_ = 0;
+    std::uint64_t recoveryVersion_ = 0;
+    bool autoCommit_ = false;
+    bool closeConfirmed_ = false;
+    std::string guardAction_;
+    std::function<void()> guardThen_;
+    std::optional<op::Practice> recovered_;
+    bool showThemeEditor_ = false;
 
     Screen screen_ = Screen::Dashboard;
     ProjectTab tab_ = ProjectTab::Overview;
@@ -217,5 +268,23 @@ private:
     std::function<void(const std::string&)> typedPathAction_;
     NewPracticeForm newPractice_;
 };
+
+// A "Set status" submenu for any status choice; true when the value changed.
+template <class E>
+bool App::statusMenu(E& value) {
+    bool changed = false;
+    if (ImGui::BeginMenu("Set status")) {
+        const auto& list = op::choices(value);
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            if (ImGui::MenuItem(list[i].label, nullptr, static_cast<std::size_t>(value) == i) &&
+                static_cast<std::size_t>(value) != i) {
+                value = static_cast<E>(i);
+                changed = true;
+            }
+        }
+        ImGui::EndMenu();
+    }
+    return changed;
+}
 
 }  // namespace opgui

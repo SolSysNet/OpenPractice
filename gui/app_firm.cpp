@@ -179,6 +179,32 @@ void App::drawTimesheet() {
             ImGui::TableNextColumn();
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted(p.refName(Ref::Project, row.project).c_str());
+            if (ImGui::BeginPopupContextItem("##rowmenu")) {
+                ImGui::TextDisabled("%s", p.refName(Ref::Project, row.project).c_str());
+                ImGui::Separator();
+                if (ImGui::MenuItem("Open project")) openProject(row.project, ProjectTab::Time);
+                if (ImGui::MenuItem("Clear this week's hours")) {
+                    const Row cleared = row;
+                    defer([this, staffId, monday, sunday, cleared] {
+                        auto& time = practice_->time;
+                        time.erase(std::remove_if(time.begin(), time.end(),
+                                                  [&](const TimeEntry& t) {
+                                                      return t.staffId == staffId && t.projectId == cleared.project &&
+                                                             t.phaseId == cleared.phase && t.date && *t.date >= monday &&
+                                                             *t.date <= sunday;
+                                                  }),
+                                   time.end());
+                        sheetRows_.erase(std::remove_if(sheetRows_.begin(), sheetRows_.end(),
+                                                        [&](const SheetRow& r) {
+                                                            return r.staff == staffId && r.project == cleared.project &&
+                                                                   r.phase == cleared.phase;
+                                                        }),
+                                         sheetRows_.end());
+                        changed();
+                    });
+                }
+                ImGui::EndPopup();
+            }
             ImGui::TableNextColumn();
             ImGui::AlignTextToFramePadding();
             const std::string phase = p.refName(Ref::Phase, row.phase);

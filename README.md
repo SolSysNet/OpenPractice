@@ -7,13 +7,13 @@ profit and multiplier, schedules with dependencies, weekly timesheets, the drawi
 change orders and invoices. Everything lives in one plain-text file on your computer. There's no account,
 no cloud, no subscription and no dependency beyond a C++17 compiler.
 
-> Status: 0.1. Single user, single file. See [limits](#limits) and the [roadmap](#roadmap).
+> Status: 0.2. Single user, single file. See [limits](#limits) and the [roadmap](#roadmap).
 
 ## Desktop app
 
 `openpractice-gui` is a native desktop app built with [Dear ImGui](https://github.com/ocornut/imgui), running on
 Win32 + Direct3D 11 on Windows and GLFW + OpenGL 3 on Linux and macOS. It shares its GUI framework (platform
-layer, theme, widgets, autosave and error recovery) with OpenTax and OpenBooks.
+layer, theme, widgets and error recovery) with OpenTax and OpenBooks.
 
 - **Dashboard:** active projects, backlog, earned fee, unbilled work, receivables and this week's hours; each
   project's progress, hours used, profit, multiplier and health; a *Needs attention* list with a link to fix
@@ -36,10 +36,42 @@ layer, theme, widgets, autosave and error recovery) with OpenTax and OpenBooks.
 - **Clients**, **Reports** (PDF and CSV, below) and **Firm settings** (overhead rate and target
   multiplier).
 
-Everything saves automatically. Open a file with `openpractice-gui path\to\firm.opp`, or use File > Open.
-To look around first, choose **Explore a sample firm** on the start screen: a nine-person firm with a
+Open a file with `openpractice-gui path\to\firm.opp`, or use File > Open. To look around first, choose **Explore a sample firm** on the start screen: a nine-person firm with a
 library in construction documents, a mixed-use building in design development and a school
 modernization under construction.
+
+### Committing changes
+
+Edits show up everywhere straight away (figures, health, the schedule), but they aren't written to the file
+until you **commit** them. While changes are uncommitted, a bar at the top shows how many there are:
+
+- **Commit** (Ctrl+S) saves them to the file.
+- **Undo** (Ctrl+Z) and **Redo** (Ctrl+Y) step through your edits, up to 100 steps. Undo works past a commit,
+  too.
+- **Review** lists every added, changed and deleted record, by project, with the fields that changed.
+- **Discard** goes back to the file as last committed. Discarding can itself be undone.
+
+Opening another file, closing the file or quitting with uncommitted changes asks whether to commit or discard
+them. Until you decide, they're kept in a recovery file beside the practice file (`firm.opp.uncommitted`). If
+the app or the computer stops unexpectedly, the next launch offers to restore them. To save every change as
+you make it instead, turn on **Edit > Commit Automatically**.
+
+### Right-click menus
+
+- **Table rows:** edit, duplicate (with the next RFI, change order or invoice number), set the status, copy the
+  row for a spreadsheet or email, or delete.
+- **Schedule:** on a task's name or bar: edit, mark done, set the status, add a follow-on task that starts
+  after it, move it a week either way, remove its dependency, or delete it.
+- **Projects** in the sidebar and on the dashboard: open a tab, save a status report, set the status, or
+  delete.
+- **Timesheet rows:** open the project, or clear the row's hours for the week.
+
+### Themes
+
+**View > Theme Editor** changes the colors of the light and dark modes separately (accent, status colors,
+text, backgrounds, panels, sidebar, fields and borders), plus corner rounding, spacing and text size. Presets
+(Teal, Blueprint, Forest, Terracotta, Graphite and High contrast) are a starting point. Changes apply as you
+make them and are saved with your settings.
 
 ## How the numbers work
 
@@ -140,16 +172,19 @@ as `.bak`, then rename). The format is easy to diff, back up and keep in version
 include/openpractice/   the engine's public headers
   model.hpp             records, schemas, the Practice and its file format
   calc.hpp              earned value, cost, profit, health, utilization and the review
+  diff.hpp              record-by-record differences between two versions of a practice
   report.hpp            CSV, PDF reports and the text summary
   format.hpp            display formatting shared by the GUI and reports
   money.hpp date.hpp    exact money, decimals and dates
 src/                    the engine, the sample practice and the command line
 gui/                    the desktop app
-  app.cpp               lifecycle, autosave, menus, sidebar, welcome screen
+  app.cpp               lifecycle, menus, sidebar, welcome screen, context menus
+  app_commit.cpp        commit stage: undo/redo, review, discard, recovery file
   app_dashboard.cpp     the dashboard
   app_projects.cpp      projects and the project tabs
   app_schedule.cpp      the Gantt chart
   app_firm.cpp          timesheet, team, clients, reports, firm settings
+  app_theme.cpp         the theme editor
   record_table.hpp      the schema-driven table + editor used by most screens
   widgets.*, theme.*    controls and styling
   platform_*, main_*    per-platform window, file dialogs and fonts

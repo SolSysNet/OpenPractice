@@ -22,6 +22,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 namespace {
 
+opgui::App* g_app = nullptr;  // asked before the window closes
 ID3D11Device* g_device = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
 IDXGISwapChain* g_swapChain = nullptr;
@@ -98,6 +99,10 @@ LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_SYSCOMMAND:
             if ((wParam & 0xfff0) == SC_KEYMENU) return 0;  // no ALT application menu
             break;
+        case WM_CLOSE:
+            // With uncommitted changes the app asks what to do and closes itself afterwards.
+            if (g_app && !g_app->canClose()) return 0;
+            break;
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
@@ -173,6 +178,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
     try {
         opgui::App app(firstArgumentUtf8());
+        g_app = &app;
 
         // Title bar follows the app theme on Windows 11.
         const BOOL dark = opgui::themeIsDark() ? TRUE : FALSE;
@@ -235,7 +241,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
             }
             if (app.quitRequested()) PostMessageW(hwnd, WM_CLOSE, 0, 0);
         }
+        g_app = nullptr;
     } catch (const std::exception& e) {
+        g_app = nullptr;
         // Last resort: report instead of vanishing (per-frame errors are handled in App::frame).
         const std::wstring message = L"OpenPractice hit an unexpected error and has to close:\n\n" + widen(e.what());
         MessageBoxW(hwnd, message.c_str(), L"OpenPractice", MB_ICONERROR);

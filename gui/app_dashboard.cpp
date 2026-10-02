@@ -108,6 +108,10 @@ void App::drawDashboard() {
             const std::string label = p.refName(Ref::Project, pr.id);
             if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) openProject(pr.id);
             ImGui::SetItemTooltip("%s\nClient: %s", st.healthNote.c_str(), p.refName(Ref::Client, pr.clientId).c_str());
+            if (ImGui::BeginPopupContextItem("##projectmenu")) {
+                projectContextMenu(pr.id);
+                ImGui::EndPopup();
+            }
             ImGui::TableNextColumn();
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted(st.currentPhase ? st.currentPhase->code.c_str() : "-");
